@@ -7,6 +7,7 @@ exports.modules = void 0;
 const express_1 = __importDefault(require("express"));
 const express_fileupload_1 = __importDefault(require("express-fileupload"));
 const cors_1 = __importDefault(require("cors"));
+const path_1 = __importDefault(require("path"));
 const handle_error_middleware_1 = require("../middleware/handle-error.middleware");
 const routes_1 = __importDefault(require("../api/routes"));
 const modules = async (app) => {
@@ -15,8 +16,10 @@ const modules = async (app) => {
     app.use((0, cors_1.default)({
         origin: '*',
     }));
-    app.use(express_1.default.static(process.cwd() + '/uploads'));
-    app.use(routes_1.default);
+    // Serve uploaded images publicly (no token required)
+    app.use('/uploads', express_1.default.static(path_1.default.join(process.cwd(), 'uploads')));
+    // `routes` is an array of Router instances.
+    app.use(...routes_1.default);
     app.use(handle_error_middleware_1.handlerError);
 };
 exports.modules = modules;

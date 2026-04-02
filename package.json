@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@types/node": "^20.10.7",
+    "@google/genai": "^1.48.0",
     "bcryptjs": "^2.4.3",
     "config": "^3.3.9",
     "cors": "^2.8.5",
