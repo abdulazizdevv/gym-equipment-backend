@@ -1,0 +1,31 @@
+import { NextFunction, Request, Response } from "express";
+import User from "../../models/User";
+
+interface AuthRequest extends Request {
+  userId?: number;
+}
+
+export const getMe = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const userId = req.userId;
+    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+
+    const user = await User.findOne({ where: { id: userId } });
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    return res.status(200).json({
+      id: user.dataValues.id,
+      name: user.dataValues.name,
+      email: user.dataValues.email,
+      avatarUrl: user.dataValues.avatarUrl,
+      createdAt: user.dataValues.createdAt,
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
