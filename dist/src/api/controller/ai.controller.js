@@ -7,9 +7,32 @@ exports.deleteAiSession = exports.getAiSessionById = exports.getAiSessions = exp
 const uuid_1 = require("uuid");
 const path_1 = __importDefault(require("path"));
 const fs_1 = __importDefault(require("fs"));
+const sequelize_1 = require("sequelize");
 const AiSession_1 = __importDefault(require("../../models/AiSession"));
 const AiPost_1 = __importDefault(require("../../models/AiPost"));
 const detectEquipment_1 = require("../../services/ai/detectEquipment");
+const connection_1 = require("../../database/connection");
+const parseSessionsQuery = (req) => {
+    const rawPage = Number(req.query.page);
+    const rawLimit = Number(req.query.limit);
+    const page = Number.isFinite(rawPage) && rawPage > 0 ? Math.floor(rawPage) : 1;
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0
+        ? Math.min(Math.floor(rawLimit), 50)
+        : 10;
+    const qRaw = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    const q = qRaw.length > 0 ? qRaw.toLowerCase() : null;
+    const sortByRaw = typeof req.query.sortBy === 'string' ? req.query.sortBy.trim() : '';
+    const sortBy = sortByRaw === 'createdAt' ||
+        sortByRaw === 'title' ||
+        sortByRaw === 'lastActivityAt'
+        ? sortByRaw
+        : 'lastActivityAt';
+    const orderRaw = typeof req.query.order === 'string'
+        ? req.query.order.trim().toLowerCase()
+        : '';
+    const order = orderRaw === 'asc' ? 'asc' : 'desc';
+    return { page, limit, q, sortBy, order };
+};
 const getRequestLanguage = (req) => {
     const lang = req.headers.lang;
     if (typeof lang === 'string' && lang.trim())
@@ -84,6 +107,7 @@ const postAiEquipment = async (req, res, next) => {
             return res.status(200).json({
                 type: 'search',
                 sessionId: createdSessionId,
+                imageUrl: `/uploads/${uploaded.imageName}`,
                 postId: post.id,
                 data: result,
             });
@@ -147,14 +171,97 @@ const getAiSessions = async (req, res, next) => {
         const userId = req.userId;
         if (!userId)
             return res.status(401).json({ message: 'Unauthorized' });
-        const sessions = await AiSession_1.default.findAll({
-            where: { userId },
-            order: [['createdAt', 'DESC']],
+        const query = parseSessionsQuery(req);
+        const offset = (query.page - 1) * query.limit;
+        const sortColumn = query.sortBy === 'title'
+            ? 'title'
+            : query.sortBy === 'createdAt'
+                ? 'created_at'
+                : 'last_activity_at';
+        const sortDirection = query.order === 'asc' ? 'ASC' : 'DESC';
+        const rows = await connection_1.sequelize.query(`
+      WITH session_stats AS (
+        SELECT
+          s.id,
+          s.created_at,
+          COALESCE((
+            SELECT p.result_json->'equipment'->>'name'
+            FROM ai_posts p
+            WHERE p.session_id = s.id
+            ORDER BY p.created_at ASC
+            LIMIT 1
+          ), 'Unknown equipment') AS title,
+          (
+            SELECT p.result_json->'muscles'->>0
+            FROM ai_posts p
+            WHERE p.session_id = s.id
+            ORDER BY p.created_at ASC
+            LIMIT 1
+          ) AS primary_muscle,
+          (
+            SELECT p.image_path
+            FROM ai_posts p
+            WHERE p.session_id = s.id AND p.type = 'search'
+            ORDER BY p.created_at ASC
+            LIMIT 1
+          ) AS image_path,
+          COALESCE((
+            SELECT MAX(p.created_at)
+            FROM ai_posts p
+            WHERE p.session_id = s.id
+          ), s.created_at) AS last_activity_at,
+          (
+            SELECT COUNT(*)::int
+            FROM ai_posts p
+            WHERE p.session_id = s.id
+          ) AS post_count
+        FROM ai_sessions s
+        WHERE s.user_id = :userId
+      )
+      SELECT
+        ss.*,
+        COUNT(*) OVER()::int AS total_count
+      FROM session_stats ss
+      WHERE (
+        :q IS NULL
+        OR ss.title ILIKE :qLike
+        OR COALESCE(ss.primary_muscle, '') ILIKE :qLike
+      )
+      ORDER BY ${sortColumn} ${sortDirection}
+      LIMIT :limit OFFSET :offset
+      `, {
+            type: sequelize_1.QueryTypes.SELECT,
+            replacements: {
+                userId,
+                q: query.q,
+                qLike: query.q ? `%${query.q}%` : null,
+                limit: query.limit,
+                offset,
+            },
         });
-        return res.status(200).json(sessions.map((s) => ({
-            id: s.dataValues.id,
-            createdAt: s.dataValues.createdAt,
-        })));
+        const total = rows.length > 0 ? Number(rows[0].total_count) : 0;
+        const totalPages = total === 0 ? 0 : Math.ceil(total / query.limit);
+        const paginated = rows.map((row) => ({
+            id: row.id,
+            title: row.title,
+            primaryMuscle: row.primary_muscle,
+            imageUrl: row.image_path ? `/uploads/${row.image_path}` : null,
+            createdAt: row.created_at,
+            lastActivityAt: row.last_activity_at,
+            postCount: Number(row.post_count),
+        }));
+        return res.status(200).json({
+            meta: {
+                page: query.page,
+                limit: query.limit,
+                total,
+                totalPages,
+                q: query.q,
+                sortBy: query.sortBy,
+                order: query.order,
+            },
+            items: paginated,
+        });
     }
     catch (error) {
         return next(error);

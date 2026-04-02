@@ -202,23 +202,33 @@ export const detectEquipment = async (
     normalized.images = [];
   }
 
-  // Optional: generate an educational mannequin illustration that highlights
-  // primary muscles for the detected equipment/exercise.
-  const generatedImageUrl = await generateExerciseIllustration({
+  // Optional: generate multiple educational mannequin illustrations.
+
+  // ✅ TO'G'RI
+  let imageBase64: string | undefined;
+  if (args.image?.filePath) {
+    const fs = await import('fs/promises');
+    const buf = await fs.readFile(args.image.filePath);
+    imageBase64 = buf.toString('base64');
+  }
+
+  const generatedImageUrls = await generateExerciseIllustrations({
     apiKey,
     modelName: imageModelName,
     language,
     equipmentName: normalized.equipment.name,
     muscles: normalized.muscles,
+    imageBase64,
+    imageMimeType: args.image?.mimeType,
   });
-  if (generatedImageUrl) {
+  for (let i = 0; i < generatedImageUrls.length; i++) {
     normalized.images.push({
-      url: generatedImageUrl,
+      url: generatedImageUrls[i],
       caption: language.startsWith('ru')
-        ? 'Сгенерированная анатомическая иллюстрация.'
+        ? `Сгенерированная анатомическая иллюстрация #${i + 1}.`
         : language.startsWith('en')
-          ? 'Generated anatomical exercise illustration.'
-          : 'Generatsiya qilingan anatomik mashq illyustratsiyasi.',
+          ? `Generated anatomical exercise illustration #${i + 1}.`
+          : `Generatsiya qilingan anatomik mashq illyustratsiyasi #${i + 1}.`,
     });
   }
 
@@ -231,11 +241,13 @@ type GenerateExerciseIllustrationArgs = {
   language: string;
   equipmentName: string;
   muscles: string[];
+  imageBase64?: string;
+  imageMimeType?: string;
 };
 
-const generateExerciseIllustration = async (
+const generateExerciseIllustrations = async (
   args: GenerateExerciseIllustrationArgs,
-): Promise<string | null> => {
+): Promise<string[]> => {
   try {
     const { GoogleGenAI } = await import('@google/genai');
     const ai = new GoogleGenAI({ apiKey: args.apiKey });
@@ -245,58 +257,87 @@ const generateExerciseIllustration = async (
       args.muscles.length > 1
         ? args.muscles.slice(1, 4).join(', ')
         : 'Supporting muscles';
-    const view = 'side';
+    const views = ['front', 'side', 'back'];
     const exerciseName = inferExerciseName(args.equipmentName);
+    const urls: string[] = [];
 
-    const prompt = [
-      `A detailed anatomical exercise illustration showing a person performing ${exerciseName} on a ${args.equipmentName}.`,
-      `The figure is shown from ${view} view.`,
-      `Muscles actively engaged are highlighted in RED:`,
-      `- Primary: ${primaryMuscle}`,
-      `- Secondary: ${secondaryMuscles}`,
-      '',
-      'Style: Clean white background, 3D rendered human muscle anatomy diagram, medical illustration style,',
-      'no clothes, visible muscle groups, red highlights on active muscles,',
-      'gray/light tone on inactive muscles.',
-      '',
-      'Similar to gym exercise anatomy charts.',
-      'High quality, educational illustration.',
-      '',
-      `Output labels language: ${args.language}.`,
-      'No logos, no watermarks, no collage.',
-    ].join('\n');
+    for (const view of views) {
+      const prompt = [
+        `Based on the gym equipment shown in the reference image,`,
+        `create a detailed anatomical exercise illustration showing a person`,
+        `performing ${exerciseName} on this exact equipment.`,
+        `The figure is shown from ${view} view.`,
+        `Muscles actively engaged are highlighted in RED:`,
+        `- Primary: ${primaryMuscle}`,
+        `- Secondary: ${secondaryMuscles}`,
+        '',
+        'Style: Clean white background, 3D rendered human muscle anatomy diagram,',
+        'medical illustration style, no clothes, visible muscle groups,',
+        'red highlights on active muscles, gray/light tone on inactive muscles.',
+        'Similar to gym exercise anatomy charts.',
+        'High quality, educational illustration.',
+        `Output labels language: ${args.language}.`,
+        'No logos, no watermarks.',
+      ].join('\n');
 
-    const generated = await ai.models.generateContent({
-      model: args.modelName,
-      contents: prompt,
-      config: {
-        // Ask for image output when model supports it.
-        responseModalities: ['TEXT', 'IMAGE'] as any,
-      } as any,
-    });
-    console.log({ generated });
+      // ✅ Parts: rasm + text birga
+      const contentParts: any[] = [];
 
-    const imagePart = extractImagePart(generated);
-    if (!imagePart?.data) return null;
+      // Agar rasm bor bo'lsa — birinchi qo'sh
+      if (args.imageBase64 && args.imageMimeType) {
+        contentParts.push({
+          inlineData: {
+            mimeType: args.imageMimeType,
+            data: args.imageBase64,
+          },
+        });
+      }
 
-    const fs = await import('fs');
-    const path = await import('path');
-    const { v4 } = await import('uuid');
+      // Keyin text prompt
+      contentParts.push({ text: prompt });
 
-    const uploadsDir = path.join(process.cwd(), 'uploads');
-    if (!fs.existsSync(uploadsDir))
-      fs.mkdirSync(uploadsDir, { recursive: true });
+      const generated = await ai.models.generateContent({
+        model: args.modelName,
+        contents: [{ role: 'user', parts: contentParts }],
+        config: {
+          responseModalities: ['TEXT', 'IMAGE'] as any,
+        } as any,
+      });
 
-    const ext = imagePart.mimeType?.includes('png') ? 'png' : 'jpg';
-    const fileName = `${v4()}-generated.${ext}`;
-    const filePath = path.join(uploadsDir, fileName);
-    const bytes = Uint8Array.from(Buffer.from(imagePart.data, 'base64'));
-    fs.writeFileSync(filePath, bytes);
+      console.log('=== GENERATED RESPONSE ===');
+      console.log(JSON.stringify(generated, null, 2));
 
-    return `/uploads/${fileName}`;
-  } catch {
-    // Non-blocking: image generation is best-effort.
-    return null;
+      const candidates =
+        generated?.candidates || (generated as any)?.response?.candidates || [];
+      console.log('=== CANDIDATES ===', JSON.stringify(candidates, null, 2));
+
+      const imagePart = extractImagePart(generated);
+      console.log(
+        '=== IMAGE PART FOUND ===',
+        imagePart ? 'YES, size: ' + imagePart.data?.length : 'NO',
+      );
+      if (!imagePart?.data) continue;
+
+      const fs = await import('fs');
+      const path = await import('path');
+      const { v4 } = await import('uuid');
+
+      const uploadsDir = path.join(process.cwd(), 'uploads');
+      if (!fs.existsSync(uploadsDir))
+        fs.mkdirSync(uploadsDir, { recursive: true });
+
+      const ext = imagePart.mimeType?.includes('png') ? 'png' : 'jpg';
+      const fileName = `${v4()}-generated-${view}.${ext}`;
+      const filePath = path.join(uploadsDir, fileName);
+      const bytes = Uint8Array.from(Buffer.from(imagePart.data, 'base64'));
+      fs.writeFileSync(filePath, bytes);
+      urls.push(`/uploads/${fileName}`);
+    }
+
+    return urls;
+  } catch (e) {
+    console.error('generateExerciseIllustrations error:', e);
+    return [];
   }
 };
 

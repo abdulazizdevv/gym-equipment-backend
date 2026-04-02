@@ -149,85 +149,118 @@ const detectEquipment = async (args) => {
     else {
         normalized.images = [];
     }
-    // Optional: generate an educational mannequin illustration that highlights
-    // primary muscles for the detected equipment/exercise.
-    const generatedImageUrl = await generateExerciseIllustration({
+    // Optional: generate multiple educational mannequin illustrations.
+    // ✅ TO'G'RI
+    let imageBase64;
+    if (args.image?.filePath) {
+        const fs = await import('fs/promises');
+        const buf = await fs.readFile(args.image.filePath);
+        imageBase64 = buf.toString('base64');
+    }
+    const generatedImageUrls = await generateExerciseIllustrations({
         apiKey,
         modelName: imageModelName,
         language,
         equipmentName: normalized.equipment.name,
         muscles: normalized.muscles,
+        imageBase64,
+        imageMimeType: args.image?.mimeType,
     });
-    if (generatedImageUrl) {
+    for (let i = 0; i < generatedImageUrls.length; i++) {
         normalized.images.push({
-            url: generatedImageUrl,
+            url: generatedImageUrls[i],
             caption: language.startsWith('ru')
-                ? 'Сгенерированная анатомическая иллюстрация.'
+                ? `Сгенерированная анатомическая иллюстрация #${i + 1}.`
                 : language.startsWith('en')
-                    ? 'Generated anatomical exercise illustration.'
-                    : 'Generatsiya qilingan anatomik mashq illyustratsiyasi.',
+                    ? `Generated anatomical exercise illustration #${i + 1}.`
+                    : `Generatsiya qilingan anatomik mashq illyustratsiyasi #${i + 1}.`,
         });
     }
     return normalized;
 };
 exports.detectEquipment = detectEquipment;
-const generateExerciseIllustration = async (args) => {
+const generateExerciseIllustrations = async (args) => {
     try {
         const { GoogleGenAI } = await import('@google/genai');
         const ai = new GoogleGenAI({ apiKey: args.apiKey });
         const primaryMuscle = args.muscles[0] || 'Primary target muscle';
-        const secondaryMuscles = args.muscles.length > 1 ? args.muscles.slice(1, 4).join(', ') : 'Supporting muscles';
-        const view = 'side';
+        const secondaryMuscles = args.muscles.length > 1
+            ? args.muscles.slice(1, 4).join(', ')
+            : 'Supporting muscles';
+        const views = ['front', 'side', 'back'];
         const exerciseName = inferExerciseName(args.equipmentName);
-        const prompt = [
-            `A detailed anatomical exercise illustration showing a person performing ${exerciseName} on a ${args.equipmentName}.`,
-            `The figure is shown from ${view} view.`,
-            `Muscles actively engaged are highlighted in RED:`,
-            `- Primary: ${primaryMuscle}`,
-            `- Secondary: ${secondaryMuscles}`,
-            '',
-            'Style: Clean white background, 3D rendered human muscle anatomy diagram, medical illustration style,',
-            'no clothes, visible muscle groups, red highlights on active muscles,',
-            'gray/light tone on inactive muscles.',
-            '',
-            'Similar to gym exercise anatomy charts.',
-            'High quality, educational illustration.',
-            '',
-            `Output labels language: ${args.language}.`,
-            'No logos, no watermarks, no collage.',
-        ].join('\n');
-        const generated = await ai.models.generateContent({
-            model: args.modelName,
-            contents: prompt,
-            config: {
-                // Ask for image output when model supports it.
-                responseModalities: ['TEXT', 'IMAGE'],
-            },
-        });
-        const imagePart = extractImagePart(generated);
-        if (!imagePart?.data)
-            return null;
-        const fs = await import('fs');
-        const path = await import('path');
-        const { v4 } = await import('uuid');
-        const uploadsDir = path.join(process.cwd(), 'uploads');
-        if (!fs.existsSync(uploadsDir))
-            fs.mkdirSync(uploadsDir, { recursive: true });
-        const ext = imagePart.mimeType?.includes('png') ? 'png' : 'jpg';
-        const fileName = `${v4()}-generated.${ext}`;
-        const filePath = path.join(uploadsDir, fileName);
-        const bytes = Uint8Array.from(Buffer.from(imagePart.data, 'base64'));
-        fs.writeFileSync(filePath, bytes);
-        return `/uploads/${fileName}`;
+        const urls = [];
+        for (const view of views) {
+            const prompt = [
+                `Based on the gym equipment shown in the reference image,`,
+                `create a detailed anatomical exercise illustration showing a person`,
+                `performing ${exerciseName} on this exact equipment.`,
+                `The figure is shown from ${view} view.`,
+                `Muscles actively engaged are highlighted in RED:`,
+                `- Primary: ${primaryMuscle}`,
+                `- Secondary: ${secondaryMuscles}`,
+                '',
+                'Style: Clean white background, 3D rendered human muscle anatomy diagram,',
+                'medical illustration style, no clothes, visible muscle groups,',
+                'red highlights on active muscles, gray/light tone on inactive muscles.',
+                'Similar to gym exercise anatomy charts.',
+                'High quality, educational illustration.',
+                `Output labels language: ${args.language}.`,
+                'No logos, no watermarks.',
+            ].join('\n');
+            // ✅ Parts: rasm + text birga
+            const contentParts = [];
+            // Agar rasm bor bo'lsa — birinchi qo'sh
+            if (args.imageBase64 && args.imageMimeType) {
+                contentParts.push({
+                    inlineData: {
+                        mimeType: args.imageMimeType,
+                        data: args.imageBase64,
+                    },
+                });
+            }
+            // Keyin text prompt
+            contentParts.push({ text: prompt });
+            const generated = await ai.models.generateContent({
+                model: args.modelName,
+                contents: [{ role: 'user', parts: contentParts }],
+                config: {
+                    responseModalities: ['TEXT', 'IMAGE'],
+                },
+            });
+            console.log('=== GENERATED RESPONSE ===');
+            console.log(JSON.stringify(generated, null, 2));
+            const candidates = generated?.candidates || generated?.response?.candidates || [];
+            console.log('=== CANDIDATES ===', JSON.stringify(candidates, null, 2));
+            const imagePart = extractImagePart(generated);
+            console.log('=== IMAGE PART FOUND ===', imagePart ? 'YES, size: ' + imagePart.data?.length : 'NO');
+            if (!imagePart?.data)
+                continue;
+            const fs = await import('fs');
+            const path = await import('path');
+            const { v4 } = await import('uuid');
+            const uploadsDir = path.join(process.cwd(), 'uploads');
+            if (!fs.existsSync(uploadsDir))
+                fs.mkdirSync(uploadsDir, { recursive: true });
+            const ext = imagePart.mimeType?.includes('png') ? 'png' : 'jpg';
+            const fileName = `${v4()}-generated-${view}.${ext}`;
+            const filePath = path.join(uploadsDir, fileName);
+            const bytes = Uint8Array.from(Buffer.from(imagePart.data, 'base64'));
+            fs.writeFileSync(filePath, bytes);
+            urls.push(`/uploads/${fileName}`);
+        }
+        return urls;
     }
-    catch {
-        // Non-blocking: image generation is best-effort.
-        return null;
+    catch (e) {
+        console.error('generateExerciseIllustrations error:', e);
+        return [];
     }
 };
 const inferExerciseName = (equipmentName) => {
     const name = equipmentName.toLowerCase();
-    if (name.includes('bike') || name.includes('velosiped') || name.includes('spin')) {
+    if (name.includes('bike') ||
+        name.includes('velosiped') ||
+        name.includes('spin')) {
         return 'indoor cycling';
     }
     if (name.includes('lat') || name.includes('pulldown')) {
