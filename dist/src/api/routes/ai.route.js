@@ -13,3 +13,5 @@ exports.router.post("/ai/equipment", requireUser_middleware_1.requireUser, ai_co
 exports.router.get("/ai/sessions", requireUser_middleware_1.requireUser, ai_controller_1.getAiSessions);
 exports.router.get("/ai/sessions/:id", requireUser_middleware_1.requireUser, ai_controller_1.getAiSessionById);
 exports.router.delete("/ai/sessions/:id", requireUser_middleware_1.requireUser, ai_controller_1.deleteAiSession);
+// Generate image for a specific post (Paid/Manual Trigger)
+exports.router.post("/ai/sessions/:sessionId/posts/:postId/generate-image", requireUser_middleware_1.requireUser, ai_controller_1.generateAiImage);
