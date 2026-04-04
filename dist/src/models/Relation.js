@@ -12,7 +12,7 @@ const relations = () => {
     User_1.default.hasMany(AiSession_1.default, { foreignKey: "userId" });
     AiSession_1.default.belongsTo(User_1.default, { foreignKey: "userId" });
     // Session -> AI turns
-    AiSession_1.default.hasMany(AiPost_1.default, { foreignKey: "sessionId" });
-    AiPost_1.default.belongsTo(AiSession_1.default, { foreignKey: "sessionId" });
+    AiSession_1.default.hasMany(AiPost_1.default, { foreignKey: 'sessionId', as: 'posts' });
+    AiPost_1.default.belongsTo(AiSession_1.default, { foreignKey: 'sessionId', as: 'session' });
 };
 exports.relations = relations;

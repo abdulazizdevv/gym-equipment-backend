@@ -1,104 +1,121 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.detectEquipment = void 0;
-const detectEquipment = async (args) => {
-    const apiKey = process.env.GEMINI_API_KEY;
-    const uploadedImageUrl = args.image?.url ?? null;
-    const mock = () => ({
-        equipment: { name: 'Unknown equipment (mock)' },
-        muscles: [],
-        usage: { steps: [], cues: [], commonMistakes: [] },
-        tips: [
-            'AI provider is not available right now (quota/billing/key). This is a mock response.',
-            'Enable Gemini API quota/billing, set GEMINI_API_KEY, then retry.',
-        ],
-        images: uploadedImageUrl
-            ? [{ url: uploadedImageUrl, caption: 'Uploaded image' }]
-            : [],
-    });
-    if (!apiKey) {
-        // Allow backend CRUD/history to work without AI key.
-        return mock();
+const error_1 = require("../../api/utils/error");
+const formatNetworkError = (err) => {
+    if (err instanceof Error) {
+        const cause = err.cause;
+        const base = err.message;
+        if (cause instanceof Error)
+            return `${base}: ${cause.message}`;
+        if (cause != null)
+            return `${base}: ${String(cause)}`;
+        return base;
     }
-    const modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-    const imageModelName = process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image-preview';
-    // New official JS SDK (Gemini Developer API)
-    // https://github.com/googleapis/js-genai
-    const { GoogleGenAI } = await import('@google/genai');
-    const ai = new GoogleGenAI({ apiKey });
-    const history = Array.isArray(args.history) ? args.history : [];
-    const language = typeof args.language === 'string' && args.language.trim()
-        ? args.language.trim()
-        : 'uz';
-    const systemPrompt = [
-        'You are a fitness expert and gym equipment identifier.',
-        'Given an image of gym equipment (if provided) and optional user question, identify the equipment and provide detailed, practical guidance.',
-        `Write ALL user-facing text in this language: ${language}.`,
-        'Keep the JSON keys in English exactly as requested.',
-        'Return ONLY valid JSON matching this schema:',
-        '{',
-        '  "equipment": { "name": string, "confidence"?: number },',
-        '  "muscles": string[],',
-        '  "usage": { "steps": string[], "cues": string[], "commonMistakes": string[] },',
-        '  "tips": string[],',
-        '  "images": { "url": string, "caption"?: string }[]',
-        '}',
-        'Do not include markdown. Do not include explanations outside JSON.',
-    ].join('\n');
-    const userPromptObj = {
-        language,
-        question: args.question ?? null,
-        history,
-        imageUrl: args.image?.url ?? null,
-    };
-    const parts = [
-        { text: `${systemPrompt}\n\nINPUT:\n${JSON.stringify(userPromptObj)}` },
-    ];
-    if (args.image?.filePath) {
-        const fs = await import('fs/promises');
-        const buf = await fs.readFile(args.image.filePath);
-        const b64 = buf.toString('base64');
-        parts.push({
-            inlineData: {
-                mimeType: args.image.mimeType,
-                data: b64,
-            },
-        });
+    return String(err);
+};
+/** Connect / DNS / TLS issues — not invalid API key (those are usually HTTP 401/403). */
+const geminiFailureMessage = (detail) => {
+    const d = detail.toLowerCase();
+    if (d.includes('connect timeout') ||
+        d.includes('connection timeout') ||
+        d.includes('econnrefused') ||
+        d.includes('enotfound') ||
+        d.includes('eai_again')) {
+        return `Gemini API unreachable (${detail}). Outbound HTTPS to Google is blocked, filtered, or too slow (firewall, VPN, ISP, corporate proxy). Try another network or mobile hotspot; set HTTPS_PROXY if required. A wrong GEMINI_API_KEY normally returns 401/403, not a connect timeout. Optional: GEMINI_HTTP_TIMEOUT_MS (default 120000).`;
     }
-    let result;
+    return `Gemini API request failed (${detail}). Check GEMINI_API_KEY, outbound HTTPS to Google, and firewall/VPN. Optional: GEMINI_HTTP_TIMEOUT_MS.`;
+};
+const geminiHttpTimeoutMs = (() => {
+    const raw = process.env.GEMINI_HTTP_TIMEOUT_MS;
+    if (raw == null || raw === '')
+        return 120_000;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 5_000 ? n : 120_000;
+})();
+const resolveLanguage = (lang) => {
+    const normalized = (lang || '').toLowerCase();
+    if (normalized.startsWith('en'))
+        return 'en';
+    if (normalized.startsWith('ru'))
+        return 'ru';
+    return 'uz';
+};
+const t = (lang) => ({
+    uploadedImage: lang === 'ru'
+        ? 'Загруженное изображение пользователя'
+        : lang === 'en'
+            ? 'User uploaded image'
+            : 'Foydalanuvchi yuklagan rasm',
+    generatedImage: lang === 'ru'
+        ? 'Сгенерированная анатомическая иллюстрация'
+        : lang === 'en'
+            ? 'Generated anatomical illustration'
+            : 'Generatsiya qilingan anatomik illyustratsiya',
+    noApiKeyTip: lang === 'ru'
+        ? 'Gemini API kaliti topilmadi'
+        : lang === 'en'
+            ? 'Gemini API key is missing'
+            : 'Gemini API kaliti yo‘q',
+});
+const safeJsonParse = (text) => {
     try {
-        result = await ai.models.generateContent({
-            model: modelName,
-            contents: [{ role: 'user', parts }],
-        });
+        return JSON.parse(text);
     }
-    catch (e) {
-        const msg = String(e?.message ?? e);
-        if (msg.includes('429') || msg.toLowerCase().includes('quota')) {
-            return mock();
+    catch { }
+    const first = text.indexOf('{');
+    const last = text.lastIndexOf('}');
+    if (first >= 0 && last > first) {
+        try {
+            return JSON.parse(text.slice(first, last + 1));
         }
-        if (msg.includes('404') && msg.includes('models/')) {
-            throw new Error([
-                'Gemini model not found / not supported for generateContent.',
-                `Tried model: ${modelName}`,
-                'Fix: set GEMINI_MODEL in .env to an available model (example: gemini-2.5-flash).',
-                'To list models for your key:',
-                'curl "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY"',
-            ].join('\n'));
-        }
-        throw e;
+        catch { }
     }
-    const text = typeof result?.text === 'string'
-        ? result.text
-        : typeof result?.response?.text === 'function'
-            ? result.response.text()
-            : typeof result?.response?.text === 'string'
-                ? result.response.text
-                : '';
-    const parsed = safeJsonParse(text);
-    const imageUrl = uploadedImageUrl;
-    // Ensure required shape for structured output.
-    const normalized = {
+    return null;
+};
+const normalizeConfidence = (value) => {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        if (value > 1 && value <= 100)
+            return Number((value / 100).toFixed(2));
+        if (value >= 0 && value <= 1)
+            return Number(value.toFixed(2));
+    }
+    if (typeof value === 'string') {
+        const n = Number(value.trim().replace('%', ''));
+        if (!Number.isNaN(n)) {
+            if (value.includes('%') || n > 1) {
+                if (n >= 0 && n <= 100)
+                    return Number((n / 100).toFixed(2));
+            }
+            else if (n >= 0 && n <= 1) {
+                return Number(n.toFixed(2));
+            }
+        }
+    }
+    return undefined;
+};
+const inferExerciseName = (equipmentName) => {
+    const name = equipmentName.toLowerCase();
+    if (name.includes('bike') ||
+        name.includes('velosiped') ||
+        name.includes('spin'))
+        return 'indoor cycling';
+    if (name.includes('lat') || name.includes('pulldown'))
+        return 'lat pulldown';
+    if (name.includes('treadmill') || name.includes('yugur'))
+        return 'running/walking';
+    if (name.includes('row'))
+        return 'seated row';
+    if (name.includes('chest') || name.includes('press'))
+        return 'chest press';
+    if (name.includes('leg') || name.includes('extension'))
+        return 'leg extension';
+    if (name.includes('multi') || name.includes('home gym'))
+        return 'lat pulldown';
+    return 'strength training exercise';
+};
+const normalizeGeminiResponse = (parsed) => {
+    return {
         equipment: {
             name: typeof parsed?.equipment?.name === 'string'
                 ? parsed.equipment.name
@@ -111,199 +128,200 @@ const detectEquipment = async (args) => {
             ? parsed.muscles.filter((m) => typeof m === 'string')
             : [],
         usage: {
-            steps: Array.isArray(parsed?.usage?.steps)
-                ? parsed.usage.steps.filter((s) => typeof s === 'string')
-                : [],
-            cues: Array.isArray(parsed?.usage?.cues)
-                ? parsed.usage.cues.filter((s) => typeof s === 'string')
-                : [],
-            commonMistakes: Array.isArray(parsed?.usage?.commonMistakes)
-                ? parsed.usage.commonMistakes.filter((s) => typeof s === 'string')
-                : [],
+            steps: parsed?.usage?.steps || [],
+            cues: parsed?.usage?.cues || [],
+            commonMistakes: parsed?.usage?.commonMistakes || [],
         },
-        tips: Array.isArray(parsed?.tips)
-            ? parsed.tips.filter((t) => typeof t === 'string')
-            : [],
+        tips: parsed?.tips || [],
         images: Array.isArray(parsed?.images)
-            ? parsed.images
-                .filter((img) => img && typeof img.url === 'string')
-                .map((img) => ({
-                url: img.url,
-                caption: typeof img.caption === 'string' ? img.caption : undefined,
-            }))
+            ? parsed.images.filter((img) => img?.url)
             : [],
     };
-    // Always include uploaded image in response images.
-    if (uploadedImageUrl) {
-        normalized.images = [
-            {
-                url: uploadedImageUrl,
-                caption: language.startsWith('ru')
-                    ? 'Загруженное изображение пользователя.'
-                    : language.startsWith('en')
-                        ? 'User uploaded image.'
-                        : 'Foydalanuvchi yuklagan rasm.',
-            },
-        ];
-    }
-    else {
-        normalized.images = [];
-    }
-    // Optional: generate multiple educational mannequin illustrations.
-    // ✅ TO'G'RI
-    let imageBase64;
-    if (args.image?.filePath) {
-        const fs = await import('fs/promises');
-        const buf = await fs.readFile(args.image.filePath);
-        imageBase64 = buf.toString('base64');
-    }
-    const generatedImageUrls = await generateExerciseIllustrations({
-        apiKey,
-        modelName: imageModelName,
-        language,
-        equipmentName: normalized.equipment.name,
-        muscles: normalized.muscles,
-        imageBase64,
-        imageMimeType: args.image?.mimeType,
-    });
-    for (let i = 0; i < generatedImageUrls.length; i++) {
-        normalized.images.push({
-            url: generatedImageUrls[i],
-            caption: language.startsWith('ru')
-                ? `Сгенерированная анатомическая иллюстрация #${i + 1}.`
-                : language.startsWith('en')
-                    ? `Generated anatomical exercise illustration #${i + 1}.`
-                    : `Generatsiya qilingan anatomik mashq illyustratsiyasi #${i + 1}.`,
-        });
-    }
-    return normalized;
 };
-exports.detectEquipment = detectEquipment;
-const generateExerciseIllustrations = async (args) => {
+const generateExerciseIllustrationWithOpenAI = async ({ equipmentName, muscles, language, }) => {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey)
+        return [];
     try {
-        const { GoogleGenAI } = await import('@google/genai');
-        const ai = new GoogleGenAI({ apiKey: args.apiKey });
-        const primaryMuscle = args.muscles[0] || 'Primary target muscle';
-        const secondaryMuscles = args.muscles.length > 1
-            ? args.muscles.slice(1, 4).join(', ')
-            : 'Supporting muscles';
-        const views = ['front', 'side', 'back'];
-        const exerciseName = inferExerciseName(args.equipmentName);
-        const urls = [];
-        for (const view of views) {
-            const prompt = [
-                `Based on the gym equipment shown in the reference image,`,
-                `create a detailed anatomical exercise illustration showing a person`,
-                `performing ${exerciseName} on this exact equipment.`,
-                `The figure is shown from ${view} view.`,
-                `Muscles actively engaged are highlighted in RED:`,
-                `- Primary: ${primaryMuscle}`,
-                `- Secondary: ${secondaryMuscles}`,
-                '',
-                'Style: Clean white background, 3D rendered human muscle anatomy diagram,',
-                'medical illustration style, no clothes, visible muscle groups,',
-                'red highlights on active muscles, gray/light tone on inactive muscles.',
-                'Similar to gym exercise anatomy charts.',
-                'High quality, educational illustration.',
-                `Output labels language: ${args.language}.`,
-                'No logos, no watermarks.',
-            ].join('\n');
-            // ✅ Parts: rasm + text birga
-            const contentParts = [];
-            // Agar rasm bor bo'lsa — birinchi qo'sh
-            if (args.imageBase64 && args.imageMimeType) {
-                contentParts.push({
-                    inlineData: {
-                        mimeType: args.imageMimeType,
-                        data: args.imageBase64,
-                    },
-                });
-            }
-            // Keyin text prompt
-            contentParts.push({ text: prompt });
-            const generated = await ai.models.generateContent({
-                model: args.modelName,
-                contents: [{ role: 'user', parts: contentParts }],
-                config: {
-                    responseModalities: ['TEXT', 'IMAGE'],
-                },
-            });
-            console.log('=== GENERATED RESPONSE ===');
-            console.log(JSON.stringify(generated, null, 2));
-            const candidates = generated?.candidates || generated?.response?.candidates || [];
-            console.log('=== CANDIDATES ===', JSON.stringify(candidates, null, 2));
-            const imagePart = extractImagePart(generated);
-            console.log('=== IMAGE PART FOUND ===', imagePart ? 'YES, size: ' + imagePart.data?.length : 'NO');
-            if (!imagePart?.data)
-                continue;
-            const fs = await import('fs');
-            const path = await import('path');
-            const { v4 } = await import('uuid');
-            const uploadsDir = path.join(process.cwd(), 'uploads');
-            if (!fs.existsSync(uploadsDir))
-                fs.mkdirSync(uploadsDir, { recursive: true });
-            const ext = imagePart.mimeType?.includes('png') ? 'png' : 'jpg';
-            const fileName = `${v4()}-generated-${view}.${ext}`;
-            const filePath = path.join(uploadsDir, fileName);
-            const bytes = Uint8Array.from(Buffer.from(imagePart.data, 'base64'));
-            fs.writeFileSync(filePath, bytes);
-            urls.push(`/uploads/${fileName}`);
+        const OpenAI = (await import('openai')).default;
+        const fs = await import('fs');
+        const path = await import('path');
+        const { v4 } = await import('uuid');
+        const client = new OpenAI({ apiKey });
+        const exerciseName = inferExerciseName(equipmentName);
+        const primaryMuscle = muscles[0] || 'latissimus dorsi';
+        const secondaryMuscles = muscles.slice(1, 6).join(', ') ||
+            'biceps, rear deltoids, trapezius, rhomboids';
+        const prompt = `
+Professional fitness anatomy diagram in the style of a textbook plate: one figure, one machine, high clarity.
+
+EQUIPMENT (must be prominent and technically believable):
+- Depict the specific apparatus for this movement: "${equipmentName}" (exercise type: ${exerciseName}).
+- Show the FULL machine in frame: frame, weight stack or load system, cables and pulleys where applicable, handles/bar/pads/seat/rollers/platform as appropriate.
+- Materials: matte metal greys, black padding, rubber feet; clean industrial gym look.
+- Cables run logically from stack to handles; user contact points (thigh pads, chest pad, foot plate) match how this machine is really used.
+- No floating or incomplete equipment — the setup must read as a real, usable station.
+
+FIGURE AND POSE:
+- One athletic adult human body (realistic proportions — not a grey dummy).
+- Clothing: plain athletic t-shirt and short-inseam gym shorts (brief length, well above the knee). Solid neutral colors only — absolutely no writing, logos, or graphics on fabric.
+- Mid-repetition pose: correct joint angles, stable spine, safe alignment for this exercise on THIS machine.
+- Hands/feet on the real grips and supports of the depicted machine.
+
+MUSCLE HIGHLIGHTING (strict contrast diagram style):
+- Primary muscle (${primaryMuscle}) → BRIGHT RED, high saturation, sharp edges, slight glow
+- Secondary muscles (${secondaryMuscles}) → ORANGE, clearly visible but less intense than red
+
+- ALL OTHER BODY AREAS:
+  must be flat LIGHT GRAY, low detail, desaturated, almost faded
+
+STRICT RULES:
+- Do NOT color the entire body
+- Do NOT use natural skin tones
+- Only active muscles have color
+- Everything else must look inactive and neutral
+
+COMPOSITION AND VISUAL CONTRAST:
+
+- Clean educational anatomy illustration on a plain white or very light neutral background
+- Subtle ground shadow allowed, no distractions
+
+- Camera angle must clearly show:
+  • the FULL ${equipmentName} machine
+  • the mannequin performing the exercise
+  • the active muscle groups in a single clear view (side or 3/4 angle)
+
+- Image must be sharp, high detail, textbook-style (not cinematic, not blurry)
+
+VISUAL CONTRAST RULE (VERY IMPORTANT):
+- Primary (RED) and secondary (ORANGE) muscles must immediately stand out at first glance
+- These active muscles should be the most visually dominant elements in the image
+
+- ALL other body areas must be:
+  • flat light gray
+  • low contrast
+  • visually faded into the background
+
+- The inactive body must visually recede so that active muscles are instantly recognizable
+
+EQUIPMENT RULES:
+- Machine must be fully visible and realistic
+- No labels, no text, no logos, no numbers, no display screens
+- Clean metal and padding only
+
+TEXT / BRANDING (strict — image must be 100% text-free):
+- Zero text anywhere: no letters, numbers, symbols, UI, posters, signs, shoe branding, screen readouts, weight-stack numbers, or arrows with words.
+- No watermarks, no logos, no captions, no text.
+
+SAFETY / STYLE RULES:
+- Athletic context only: short gym shorts are normal sportswear; no nudity; no sexualized posing or camera angle.
+- Exactly one person; no crowd.
+`.trim();
+        const result = await client.images.generate({
+            model: 'dall-e-3',
+            prompt,
+            size: '1024x1024',
+            // Default API response is `url`; we persist files locally so we need base64.
+            response_format: 'b64_json',
+        });
+        const row = result.data?.[0];
+        const b64 = row?.b64_json;
+        const remoteUrl = row?.url;
+        const uploadsDir = path.join(process.cwd(), 'uploads');
+        if (!fs.existsSync(uploadsDir)) {
+            fs.mkdirSync(uploadsDir, { recursive: true });
         }
-        return urls;
+        const fileName = `${v4()}.png`;
+        const filePath = path.join(uploadsDir, fileName);
+        if (b64) {
+            fs.writeFileSync(filePath, new Uint8Array(Buffer.from(b64, 'base64')));
+        }
+        else if (remoteUrl) {
+            const imgRes = await fetch(remoteUrl);
+            if (!imgRes.ok)
+                return [];
+            fs.writeFileSync(filePath, new Uint8Array(await imgRes.arrayBuffer()));
+        }
+        else {
+            return [];
+        }
+        return [`/uploads/${fileName}`];
     }
-    catch (e) {
-        console.error('generateExerciseIllustrations error:', e);
+    catch (err) {
+        console.error('OpenAI image error:', err);
         return [];
     }
 };
-const inferExerciseName = (equipmentName) => {
-    const name = equipmentName.toLowerCase();
-    if (name.includes('bike') ||
-        name.includes('velosiped') ||
-        name.includes('spin')) {
-        return 'indoor cycling';
+const detectEquipment = async (args) => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    const language = resolveLanguage(args.language);
+    const i18n = t(language);
+    if (!apiKey) {
+        return {
+            equipment: { name: 'No API key' },
+            muscles: [],
+            usage: { steps: [], cues: [], commonMistakes: [] },
+            tips: [i18n.noApiKeyTip],
+            images: [],
+        };
     }
-    if (name.includes('lat') || name.includes('pulldown')) {
-        return 'lat pulldown';
+    const { GoogleGenAI } = await import('@google/genai');
+    const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: { timeout: geminiHttpTimeoutMs },
+    });
+    const parts = [
+        {
+            text: `
+You are a gym expert.
+Write ALL user-facing text in this language: ${language}.
+Return ONLY JSON:
+{
+  "equipment": { "name": string, "confidence": number },
+  "muscles": string[],
+  "usage": { "steps": string[], "cues": string[], "commonMistakes": string[] },
+  "tips": string[],
+  "images": []
+}
+      `,
+        },
+    ];
+    // user image qo‘shish
+    if (args.image?.filePath) {
+        const fs = await import('fs/promises');
+        const buf = await fs.readFile(args.image.filePath);
+        parts.push({
+            inlineData: {
+                mimeType: args.image.mimeType,
+                data: buf.toString('base64'),
+            },
+        });
     }
-    if (name.includes('treadmill') || name.includes('yugur')) {
-        return 'running/walking';
-    }
-    if (name.includes('row')) {
-        return 'seated row';
-    }
-    return 'a representative exercise';
-};
-const extractImagePart = (generated) => {
-    // Try common SDK response shapes.
-    const parts = generated?.candidates?.[0]?.content?.parts ||
-        generated?.response?.candidates?.[0]?.content?.parts ||
-        generated?.output?.[0]?.content?.parts ||
-        [];
-    for (const p of parts) {
-        if (p?.inlineData?.data) {
-            return { data: p.inlineData.data, mimeType: p.inlineData.mimeType };
-        }
-        if (p?.image?.data) {
-            return { data: p.image.data, mimeType: p.image.mimeType };
-        }
-    }
-    return null;
-};
-const safeJsonParse = (text) => {
+    // Gemini chaqirish
+    let response;
     try {
-        return JSON.parse(text);
+        response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: [{ role: 'user', parts }],
+        });
     }
-    catch { }
-    // Try extracting the first JSON object from mixed output
-    const first = text.indexOf('{');
-    const last = text.lastIndexOf('}');
-    if (first >= 0 && last > first) {
-        const slice = text.slice(first, last + 1);
-        try {
-            return JSON.parse(slice);
-        }
-        catch { }
+    catch (err) {
+        throw new error_1.CustomError(geminiFailureMessage(formatNetworkError(err)), 502);
     }
-    return null;
+    const text = response?.text || '';
+    const parsed = safeJsonParse(text);
+    // normalize
+    const normalized = normalizeGeminiResponse(parsed);
+    // 👉 OPENAI GENERATE IMAGE
+    const generatedImages = await generateExerciseIllustrationWithOpenAI({
+        equipmentName: normalized.equipment.name,
+        muscles: normalized.muscles,
+        language: args.language ?? 'uz',
+    });
+    normalized.images.push(...generatedImages.map((url, i) => ({
+        url,
+        caption: `${i18n.generatedImage} #${i + 1}`,
+    })));
+    return normalized;
 };
+exports.detectEquipment = detectEquipment;

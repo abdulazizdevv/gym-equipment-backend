@@ -12,6 +12,23 @@ interface AuthRequest extends Request {
   userId?: number;
 }
 
+/** GET /ai/sessions/:id javobi (data = asosiy search post) */
+export type AiSessionDetailPost = {
+  id: number;
+  type: string;
+  imageUrl: string | null;
+  request: Record<string, unknown>;
+  result: Record<string, unknown>;
+  createdAt: Date;
+};
+
+export type AiSessionDetailResponse = {
+  id: number;
+  createdAt: Date;
+  data: AiSessionDetailPost | null;
+  followups?: AiSessionDetailPost[];
+};
+
 type SessionsQuery = {
   page: number;
   limit: number;
@@ -19,6 +36,15 @@ type SessionsQuery = {
   sortBy: 'createdAt' | 'lastActivityAt' | 'title';
   order: 'asc' | 'desc';
 };
+
+const serializeAiPost = (p: AiPost): AiSessionDetailPost => ({
+  id: p.id,
+  type: p.type,
+  imageUrl: p.imagePath ? `/uploads/${p.imagePath}` : null,
+  request: p.requestJson as Record<string, unknown>,
+  result: p.resultJson as Record<string, unknown>,
+  createdAt: p.createdAt,
+});
 
 const parseSessionsQuery = (req: Request): SessionsQuery => {
   const rawPage = Number(req.query.page);
@@ -110,10 +136,24 @@ export const postAiEquipment = async (
         fs.mkdirSync(uploadsDir, { recursive: true });
 
       const imagePathFs = path.join(uploadsDir, uploaded.imageName);
-      uploaded.file.mv(imagePathFs);
+      await new Promise<void>((resolve, reject) => {
+        uploaded.file.mv(imagePathFs, (err: any) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
 
-      const session = await AiSession.create({ userId });
-      const createdSessionId = session.dataValues.id;
+      const stat = fs.statSync(imagePathFs);
+      if (stat.size === 0) {
+        try {
+          fs.unlinkSync(imagePathFs);
+        } catch {}
+        return res.status(400).json({
+          message:
+            'Empty image upload. Send the file bytes in multipart field "image" (e.g. curl -F image=@photo.jpg).',
+        });
+      }
+
       const result = await detectEquipment({
         image: {
           filePath: imagePathFs,
@@ -125,19 +165,26 @@ export const postAiEquipment = async (
         language,
       });
 
-      const post = await AiPost.create({
-        sessionId: createdSessionId,
-        type: 'search',
-        imagePath: uploaded.imageName,
-        requestJson: {
-          question: typeof question === 'string' ? question : null,
-        },
-        resultJson: result,
+      const { session, post } = await sequelize.transaction(async (transaction) => {
+        const session = await AiSession.create({ userId }, { transaction });
+        const post = await AiPost.create(
+          {
+            sessionId: session.id,
+            type: 'search',
+            imagePath: uploaded.imageName,
+            requestJson: {
+              question: typeof question === 'string' ? question : null,
+            },
+            resultJson: result as Record<string, unknown>,
+          },
+          { transaction },
+        );
+        return { session, post };
       });
 
       return res.status(200).json({
         type: 'search',
-        sessionId: createdSessionId,
+        sessionId: session.id,
         imageUrl: `/uploads/${uploaded.imageName}`,
         postId: post.id,
         data: result,
@@ -186,15 +233,18 @@ export const postAiEquipment = async (
       language,
     });
 
-    const post = await AiPost.create({
-      sessionId: session.dataValues.id,
-      type: 'followup',
-      imagePath: null,
-      requestJson: {
-        question,
-      },
-      resultJson: result,
-    });
+    const post = await sequelize.transaction(async (transaction) =>
+      AiPost.create(
+        {
+          sessionId: session.id,
+          type: 'followup',
+          imagePath: null,
+          requestJson: { question },
+          resultJson: result as Record<string, unknown>,
+        },
+        { transaction },
+      ),
+    );
 
     return res.status(200).json({
       type: 'followup',
@@ -327,7 +377,6 @@ export const getAiSessions = async (
     return next(error);
   }
 };
-
 export const getAiSessionById = async (
   req: AuthRequest,
   res: Response,
@@ -344,28 +393,50 @@ export const getAiSessionById = async (
 
     const session = await AiSession.findOne({
       where: { id: sessionId, userId },
+      include: [
+        {
+          model: AiPost,
+          as: 'posts',
+          separate: true,
+          order: [['createdAt', 'ASC']],
+        },
+      ],
     });
+
     if (!session) return res.status(404).json({ message: 'Not found' });
 
-    const posts = await AiPost.findAll({
-      where: { sessionId },
-      order: [['createdAt', 'ASC']],
-    });
+    const posts = session.posts ?? [];
 
-    return res.status(200).json({
-      id: session.dataValues.id,
-      createdAt: session.dataValues.createdAt,
-      posts: posts.map((p) => ({
-        id: p.dataValues.id,
-        type: p.dataValues.type,
-        imageUrl: p.dataValues.imagePath
-          ? `/uploads/${p.dataValues.imagePath}`
-          : null,
-        request: p.dataValues.requestJson,
-        result: p.dataValues.resultJson,
-        createdAt: p.dataValues.createdAt,
-      })),
-    });
+    let primary: AiPost | undefined;
+    for (let i = 0; i < posts.length; i++) {
+      if (posts[i].type === 'search') {
+        primary = posts[i];
+        break;
+      }
+    }
+    if (posts.length > 0 && primary === undefined) {
+      primary = posts[0];
+    }
+
+    const followups: AiSessionDetailPost[] = [];
+    if (primary !== undefined) {
+      for (let i = 0; i < posts.length; i++) {
+        if (posts[i].id !== primary.id) {
+          followups.push(serializeAiPost(posts[i]));
+        }
+      }
+    }
+
+    const body: AiSessionDetailResponse = {
+      id: session.id,
+      createdAt: session.createdAt,
+      data: primary !== undefined ? serializeAiPost(primary) : null,
+    };
+    if (followups.length > 0) {
+      body.followups = followups;
+    }
+
+    return res.status(200).json(body);
   } catch (error) {
     return next(error);
   }
@@ -392,7 +463,7 @@ export const deleteAiSession = async (
 
     const posts = await AiPost.findAll({ where: { sessionId } });
     for (const p of posts) {
-      const imagePath = p.dataValues.imagePath;
+      const imagePath = p.imagePath;
       if (imagePath) {
         const filePath = path.join(process.cwd(), 'uploads', imagePath);
         if (fs.existsSync(filePath)) {
