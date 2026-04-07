@@ -11,11 +11,11 @@ const email_1 = require("../../services/auth/email");
 const authGoogle = async (req, res, next) => {
     try {
         const body = req.body ?? {};
-        const { idToken, googleId: bodyGoogleId, email: bodyEmail, name: bodyName, avatarUrl: bodyAvatarUrl, } = body;
-        let googleId = bodyGoogleId;
-        let email = bodyEmail;
-        let name = bodyName;
-        let avatarUrl = bodyAvatarUrl;
+        const { idToken, googleId: bodyGoogleId, providerAccountId, email: bodyEmail, name: bodyName, avatarUrl: bodyAvatarUrl, user: bodyUser, } = body;
+        let googleId = bodyGoogleId || providerAccountId;
+        let email = bodyEmail || bodyUser?.email;
+        let name = bodyName || bodyUser?.name;
+        let avatarUrl = bodyAvatarUrl || bodyUser?.image;
         // If front sends `idToken`, decode it (verification later can be added).
         if (idToken && !googleId) {
             const decoded = (0, jsonwebtoken_1.decode)(idToken);

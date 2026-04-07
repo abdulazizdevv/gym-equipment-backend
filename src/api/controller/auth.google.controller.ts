@@ -14,15 +14,17 @@ export const authGoogle = async (
     const {
       idToken,
       googleId: bodyGoogleId,
+      providerAccountId,
       email: bodyEmail,
       name: bodyName,
       avatarUrl: bodyAvatarUrl,
+      user: bodyUser,
     } = body;
 
-    let googleId: string | undefined = bodyGoogleId;
-    let email: string | null | undefined = bodyEmail;
-    let name: string | undefined = bodyName;
-    let avatarUrl: string | null | undefined = bodyAvatarUrl;
+    let googleId: string | undefined = bodyGoogleId || providerAccountId;
+    let email: string | null | undefined = bodyEmail || bodyUser?.email;
+    let name: string | undefined = bodyName || bodyUser?.name;
+    let avatarUrl: string | null | undefined = bodyAvatarUrl || bodyUser?.image;
 
     // If front sends `idToken`, decode it (verification later can be added).
     if (idToken && !googleId) {
