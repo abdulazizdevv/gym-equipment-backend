@@ -1,4 +1,5 @@
 import { CustomError } from "../../api/utils/error"
+import { uploadFile } from "../storage/r2.service"
 
 const formatNetworkError = (err: unknown): string => {
   if (err instanceof Error) {
@@ -34,7 +35,8 @@ const geminiHttpTimeoutMs = (() => {
 })()
 
 export type EquipmentImage = {
-  filePath: string
+  filePath?: string
+  buffer?: Buffer | Uint8Array
   url: string
   mimeType: string
 }
@@ -183,8 +185,6 @@ export const generateExerciseIllustrationWithOpenAI = async ({
 
   try {
     const OpenAI = (await import("openai")).default
-    const fs = await import("fs")
-    const path = await import("path")
     const { v4 } = await import("uuid")
 
     const client = new OpenAI({ apiKey })
@@ -271,25 +271,22 @@ SAFETY / STYLE RULES:
     const b64 = row?.b64_json
     const remoteUrl = row?.url
 
-    const uploadsDir = path.join(process.cwd(), "uploads")
-    if (!fs.existsSync(uploadsDir)) {
-      fs.mkdirSync(uploadsDir, { recursive: true })
-    }
-
     const fileName = `${v4()}.png`
-    const filePath = path.join(uploadsDir, fileName)
+    let finalUrl = ""
 
     if (b64) {
-      fs.writeFileSync(filePath, new Uint8Array(Buffer.from(b64, "base64")))
+      const buffer = Buffer.from(b64, "base64")
+      finalUrl = await uploadFile(buffer, fileName, "image/png")
     } else if (remoteUrl) {
       const imgRes = await fetch(remoteUrl)
       if (!imgRes.ok) return []
-      fs.writeFileSync(filePath, new Uint8Array(await imgRes.arrayBuffer()))
+      const buffer = new Uint8Array(await imgRes.arrayBuffer())
+      finalUrl = await uploadFile(buffer, fileName, "image/png")
     } else {
       return []
     }
 
-    return [`/uploads/${fileName}`]
+    return [finalUrl]
   } catch (err) {
     console.error("OpenAI image error:", err)
     return []
@@ -337,7 +334,18 @@ Return ONLY JSON:
   ]
 
   // user image qo‘shish
-  if (args.image?.filePath) {
+  if (args.image?.buffer) {
+    const data = Buffer.isBuffer(args.image.buffer)
+      ? args.image.buffer.toString("base64")
+      : Buffer.from(args.image.buffer).toString("base64")
+
+    parts.push({
+      inlineData: {
+        mimeType: args.image.mimeType,
+        data,
+      },
+    })
+  } else if (args.image?.filePath) {
     const fs = await import("fs/promises")
     const buf = await fs.readFile(args.image.filePath)
 

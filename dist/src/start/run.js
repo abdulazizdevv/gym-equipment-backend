@@ -3,7 +3,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.run = void 0;
 const Relation_1 = require("../models/Relation");
 const connection_1 = require("./../database/connection");
+const init_db_1 = require("../database/init-db");
 const run = async (app) => {
+    await (0, init_db_1.initDb)();
     (0, Relation_1.relations)();
     await connection_1.sequelize.authenticate({
         logging: false,

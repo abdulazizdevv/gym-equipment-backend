@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.detectEquipment = exports.generateExerciseIllustrationWithOpenAI = void 0;
 const error_1 = require("../../api/utils/error");
+const r2_service_1 = require("../storage/r2.service");
 const formatNetworkError = (err) => {
     if (err instanceof Error) {
         const cause = err.cause;
@@ -144,8 +145,6 @@ const generateExerciseIllustrationWithOpenAI = async ({ equipmentName, muscles, 
         return [];
     try {
         const OpenAI = (await import("openai")).default;
-        const fs = await import("fs");
-        const path = await import("path");
         const { v4 } = await import("uuid");
         const client = new OpenAI({ apiKey });
         const exerciseName = inferExerciseName(equipmentName);
@@ -227,25 +226,23 @@ SAFETY / STYLE RULES:
         const row = result.data?.[0];
         const b64 = row?.b64_json;
         const remoteUrl = row?.url;
-        const uploadsDir = path.join(process.cwd(), "uploads");
-        if (!fs.existsSync(uploadsDir)) {
-            fs.mkdirSync(uploadsDir, { recursive: true });
-        }
         const fileName = `${v4()}.png`;
-        const filePath = path.join(uploadsDir, fileName);
+        let finalUrl = "";
         if (b64) {
-            fs.writeFileSync(filePath, new Uint8Array(Buffer.from(b64, "base64")));
+            const buffer = Buffer.from(b64, "base64");
+            finalUrl = await (0, r2_service_1.uploadFile)(buffer, fileName, "image/png");
         }
         else if (remoteUrl) {
             const imgRes = await fetch(remoteUrl);
             if (!imgRes.ok)
                 return [];
-            fs.writeFileSync(filePath, new Uint8Array(await imgRes.arrayBuffer()));
+            const buffer = new Uint8Array(await imgRes.arrayBuffer());
+            finalUrl = await (0, r2_service_1.uploadFile)(buffer, fileName, "image/png");
         }
         else {
             return [];
         }
-        return [`/uploads/${fileName}`];
+        return [finalUrl];
     }
     catch (err) {
         console.error("OpenAI image error:", err);
@@ -288,7 +285,18 @@ Return ONLY JSON:
         },
     ];
     // user image qo‘shish
-    if (args.image?.filePath) {
+    if (args.image?.buffer) {
+        const data = Buffer.isBuffer(args.image.buffer)
+            ? args.image.buffer.toString("base64")
+            : Buffer.from(args.image.buffer).toString("base64");
+        parts.push({
+            inlineData: {
+                mimeType: args.image.mimeType,
+                data,
+            },
+        });
+    }
+    else if (args.image?.filePath) {
         const fs = await import("fs/promises");
         const buf = await fs.readFile(args.image.filePath);
         parts.push({

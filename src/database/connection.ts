@@ -1,7 +1,6 @@
-import { Sequelize } from 'sequelize';
+import { Sequelize } from "sequelize"
 
 const databaseUrl: string =
-  process.env.DATABASE_URL ??
-  'postgresql://abdulaziz@localhost:5432/gym_equipment';
+  process.env.DATABASE_URL ?? "postgresql://abdulaziz@localhost:5432/muskul"
 
-export const sequelize = new Sequelize(databaseUrl);
+export const sequelize = new Sequelize(databaseUrl)

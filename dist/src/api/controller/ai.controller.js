@@ -12,10 +12,15 @@ const AiSession_1 = __importDefault(require("../../models/AiSession"));
 const AiPost_1 = __importDefault(require("../../models/AiPost"));
 const detectEquipment_1 = require("../../services/ai/detectEquipment");
 const connection_1 = require("../../database/connection");
+const r2_service_1 = require("../../services/storage/r2.service");
 const serializeAiPost = (p) => ({
     id: p.id,
     type: p.type,
-    imageUrl: p.imagePath ? `/uploads/${p.imagePath}` : null,
+    imageUrl: p.imagePath
+        ? p.imagePath.startsWith("http")
+            ? p.imagePath
+            : `/uploads/${p.imagePath}`
+        : null,
     request: p.requestJson,
     result: p.resultJson,
     createdAt: p.createdAt,
@@ -86,44 +91,27 @@ const postAiEquipment = async (req, res, next) => {
         // SEARCH mode: client uploads `image`
         const uploaded = getUploadedImage(req);
         if (uploaded) {
-            const uploadsDir = path_1.default.join(process.cwd(), "uploads");
-            if (!fs_1.default.existsSync(uploadsDir))
-                fs_1.default.mkdirSync(uploadsDir, { recursive: true });
-            const imagePathFs = path_1.default.join(uploadsDir, uploaded.imageName);
-            await new Promise((resolve, reject) => {
-                uploaded.file.mv(imagePathFs, (err) => {
-                    if (err)
-                        reject(err);
-                    else
-                        resolve();
-                });
-            });
-            const stat = fs_1.default.statSync(imagePathFs);
-            if (stat.size === 0) {
-                try {
-                    fs_1.default.unlinkSync(imagePathFs);
-                }
-                catch { }
-                return res.status(400).json({
-                    message: 'Empty image upload. Send the file bytes in multipart field "image" (e.g. curl -F image=@photo.jpg).',
-                });
-            }
+            // 1. Upload to Cloudflare R2
+            const r2Url = await (0, r2_service_1.uploadFile)(uploaded.file.data, uploaded.imageName, extToMime(uploaded.ext));
+            // 2. Detect equipment with Gemini
             const result = await (0, detectEquipment_1.detectEquipment)({
                 image: {
-                    filePath: imagePathFs,
-                    url: `/uploads/${uploaded.imageName}`,
+                    filePath: "", // Not used when buffer is provided
+                    buffer: uploaded.file.data,
+                    url: r2Url,
                     mimeType: extToMime(uploaded.ext),
                 },
                 question: typeof question === "string" ? question : undefined,
                 history: [],
                 language,
             });
+            // 3. Create session and post in DB
             const { session, post } = await connection_1.sequelize.transaction(async (transaction) => {
                 const session = await AiSession_1.default.create({ userId }, { transaction });
                 const post = await AiPost_1.default.create({
                     sessionId: session.id,
                     type: "search",
-                    imagePath: uploaded.imageName,
+                    imagePath: r2Url, // Store FULL Cloudflare URL in DB
                     requestJson: {
                         question: typeof question === "string" ? question : null,
                     },
@@ -131,10 +119,11 @@ const postAiEquipment = async (req, res, next) => {
                 }, { transaction });
                 return { session, post };
             });
+            // 4. Return response with R2 URL
             return res.status(200).json({
                 type: "search",
                 sessionId: session.id,
-                imageUrl: `/uploads/${uploaded.imageName}`,
+                imageUrl: r2Url,
                 postId: post.id,
                 data: result,
             });
@@ -166,7 +155,7 @@ const postAiEquipment = async (req, res, next) => {
             request: p.requestJson,
             result: p.resultJson,
         }));
-        // New AI call for each follow-up turn.
+        // New AI call for each follow-up turn
         const result = await (0, detectEquipment_1.detectEquipment)({
             question,
             history,
@@ -270,7 +259,11 @@ const getAiSessions = async (req, res, next) => {
             id: row.id,
             title: row.title,
             primaryMuscle: row.primary_muscle,
-            imageUrl: row.image_path ? `/uploads/${row.image_path}` : null,
+            imageUrl: row.image_path
+                ? row.image_path.startsWith("http")
+                    ? row.image_path
+                    : `/uploads/${row.image_path}`
+                : null,
             createdAt: row.created_at,
             lastActivityAt: row.last_activity_at,
             postCount: Number(row.post_count),
@@ -367,12 +360,21 @@ const deleteAiSession = async (req, res, next) => {
         for (const p of posts) {
             const imagePath = p.imagePath;
             if (imagePath) {
-                const filePath = path_1.default.join(process.cwd(), "uploads", imagePath);
-                if (fs_1.default.existsSync(filePath)) {
-                    try {
-                        fs_1.default.unlinkSync(filePath);
+                if (imagePath.startsWith("http")) {
+                    // Delete from R2 (extract filename from URL)
+                    const fileName = imagePath.split("/").pop();
+                    if (fileName)
+                        await (0, r2_service_1.deleteFile)(fileName);
+                }
+                else {
+                    // Legacy local deletion
+                    const filePath = path_1.default.join(process.cwd(), "uploads", imagePath);
+                    if (fs_1.default.existsSync(filePath)) {
+                        try {
+                            fs_1.default.unlinkSync(filePath);
+                        }
+                        catch { }
                     }
-                    catch { }
                 }
             }
         }

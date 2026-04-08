@@ -1,8 +1,10 @@
 import { relations } from "../models/Relation";
 import { sequelize } from "./../database/connection";
 import { Application } from "express";
+import { initDb } from "../database/init-db";
 
 export const run = async (app: Application) => {
+  await initDb();
   relations();
   await sequelize.authenticate({
     logging: false,
