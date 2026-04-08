@@ -13,6 +13,7 @@ const AiPost_1 = __importDefault(require("../../models/AiPost"));
 const detectEquipment_1 = require("../../services/ai/detectEquipment");
 const connection_1 = require("../../database/connection");
 const r2_service_1 = require("../../services/storage/r2.service");
+const image_service_1 = require("../../services/storage/image.service");
 const serializeAiPost = (p) => ({
     id: p.id,
     type: p.type,
@@ -91,15 +92,18 @@ const postAiEquipment = async (req, res, next) => {
         // SEARCH mode: client uploads `image`
         const uploaded = getUploadedImage(req);
         if (uploaded) {
+            // 0. Optimize: Compress and convert to WebP
+            const optimized = await (0, image_service_1.optimizeImage)(uploaded.file.data);
+            const webpName = `${(0, uuid_1.v4)()}.webp`;
             // 1. Upload to Cloudflare R2
-            const r2Url = await (0, r2_service_1.uploadFile)(uploaded.file.data, uploaded.imageName, extToMime(uploaded.ext));
+            const r2Url = await (0, r2_service_1.uploadFile)(optimized.buffer, webpName, optimized.mimeType);
             // 2. Detect equipment with Gemini
             const result = await (0, detectEquipment_1.detectEquipment)({
                 image: {
                     filePath: "", // Not used when buffer is provided
-                    buffer: uploaded.file.data,
+                    buffer: optimized.buffer,
                     url: r2Url,
-                    mimeType: extToMime(uploaded.ext),
+                    mimeType: optimized.mimeType,
                 },
                 question: typeof question === "string" ? question : undefined,
                 history: [],

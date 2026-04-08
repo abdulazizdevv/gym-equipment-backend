@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.detectEquipment = exports.generateExerciseIllustrationWithOpenAI = void 0;
 const error_1 = require("../../api/utils/error");
 const r2_service_1 = require("../storage/r2.service");
+const image_service_1 = require("../storage/image.service");
 const formatNetworkError = (err) => {
     if (err instanceof Error) {
         const cause = err.cause;
@@ -230,14 +231,16 @@ SAFETY / STYLE RULES:
         let finalUrl = "";
         if (b64) {
             const buffer = Buffer.from(b64, "base64");
-            finalUrl = await (0, r2_service_1.uploadFile)(buffer, fileName, "image/png");
+            const optimized = await (0, image_service_1.optimizeImage)(buffer);
+            finalUrl = await (0, r2_service_1.uploadFile)(optimized.buffer, `${v4()}.webp`, optimized.mimeType);
         }
         else if (remoteUrl) {
             const imgRes = await fetch(remoteUrl);
             if (!imgRes.ok)
                 return [];
             const buffer = new Uint8Array(await imgRes.arrayBuffer());
-            finalUrl = await (0, r2_service_1.uploadFile)(buffer, fileName, "image/png");
+            const optimized = await (0, image_service_1.optimizeImage)(buffer);
+            finalUrl = await (0, r2_service_1.uploadFile)(optimized.buffer, `${v4()}.webp`, optimized.mimeType);
         }
         else {
             return [];

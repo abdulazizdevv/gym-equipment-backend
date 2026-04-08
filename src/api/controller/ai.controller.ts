@@ -11,6 +11,7 @@ import {
 } from "../../services/ai/detectEquipment"
 import { sequelize } from "../../database/connection"
 import { uploadFile, deleteFile } from "../../services/storage/r2.service"
+import { optimizeImage } from "../../services/storage/image.service"
 
 interface AuthRequest extends Request {
   userId?: number
@@ -138,20 +139,24 @@ export const postAiEquipment = async (
     // SEARCH mode: client uploads `image`
     const uploaded = getUploadedImage(req)
     if (uploaded) {
+      // 0. Optimize: Compress and convert to WebP
+      const optimized = await optimizeImage(uploaded.file.data)
+      const webpName = `${v4()}.webp`
+
       // 1. Upload to Cloudflare R2
       const r2Url = await uploadFile(
-        uploaded.file.data,
-        uploaded.imageName,
-        extToMime(uploaded.ext),
+        optimized.buffer,
+        webpName,
+        optimized.mimeType,
       )
 
       // 2. Detect equipment with Gemini
       const result = await detectEquipment({
         image: {
           filePath: "", // Not used when buffer is provided
-          buffer: uploaded.file.data,
+          buffer: optimized.buffer,
           url: r2Url,
-          mimeType: extToMime(uploaded.ext),
+          mimeType: optimized.mimeType,
         },
         question: typeof question === "string" ? question : undefined,
         history: [],
