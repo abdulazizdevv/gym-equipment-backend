@@ -26,8 +26,14 @@ export const requireUser = async (
       return res.status(401).json({ message: "Unauthorized" });
     }
 
+    console.log(`[Middleware] Checking user in DB for ID: ${decoded.id}`);
+    const start = Date.now();
     const user = await User.findByPk(decoded.id);
+    const duration = Date.now() - start;
+    console.log(`[Middleware] DB query finished in ${duration}ms`);
+
     if (!user) {
+      console.warn(`[Middleware] User not found in DB: ${decoded.id}`);
       return res.status(401).json({ message: "Unauthorized: User not found in database" });
     }
 

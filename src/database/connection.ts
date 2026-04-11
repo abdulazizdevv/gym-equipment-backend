@@ -5,6 +5,13 @@ const databaseUrl: string =
 
 const options: Options = {
   dialect: "postgres",
+  logging: false,
+  pool: {
+    max: 5,
+    min: 0,
+    acquire: 30000,
+    idle: 10000,
+  },
 }
 
 // Neon and other managed PG hosts require SSL
@@ -14,6 +21,7 @@ if (databaseUrl.includes("neon.tech") || databaseUrl.includes("sslmode=require")
       require: true,
       rejectUnauthorized: false, // Required for many managed DB providers
     },
+    keepAlive: true,
   }
 }
 
