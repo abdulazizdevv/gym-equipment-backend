@@ -363,7 +363,7 @@ Return ONLY JSON:
     })
   }
 
-  let lastError: any = null
+  const errors: Array<{ index: number; key: string; detail: string }> = []
 
   // Sequential retry logic: always starts from index 0, then 1, 2, 3...
   for (let i = 0; i < GEMINI_API_KEYS.length; i++) {
@@ -388,18 +388,23 @@ Return ONLY JSON:
       // normalize and return immediately on success
       return normalizeGeminiResponse(parsed)
     } catch (err) {
+      const detail = formatNetworkError(err)
       console.warn(
-        `Gemini API attempt failed with key index ${i} (${apiKey.substring(0, 6)}...):`,
-        formatNetworkError(err),
+        `Gemini API attempt failed with key index ${i} (${apiKey}):`,
+        detail,
       )
-      lastError = err
+      errors.push({ index: i, key: apiKey, detail })
       // Continue to next key in loop
     }
   }
 
   // If we reach here, all keys failed
-  throw new CustomError(
-    geminiFailureMessage(formatNetworkError(lastError)),
-    502,
-  )
+  const errorInfo =
+    errors.length > 0
+      ? errors
+          .map((e) => `[Key ${e.index}: ${e.key}] ${e.detail}`)
+          .join(" \n\n ")
+      : "No keys available."
+
+  throw new CustomError(geminiFailureMessage(errorInfo), 502)
 }
