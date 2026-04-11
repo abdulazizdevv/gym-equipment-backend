@@ -18,28 +18,22 @@ export const requireUser = async (
       : null;
 
     if (!token) {
-      return res.status(401).json({ message: "Unauthorized" });
+      console.warn("[Middleware] No token provided");
+      return res.status(401).json({ message: "Unauthorized: No token" });
     }
 
     const decoded = verifyToken(token) as unknown as { id?: number };
     if (!decoded?.id) {
-      return res.status(401).json({ message: "Unauthorized" });
+      console.warn("[Middleware] Invalid token payload");
+      return res.status(401).json({ message: "Unauthorized: Invalid token" });
     }
 
-    console.log(`[Middleware] Checking user in DB for ID: ${decoded.id}`);
-    const start = Date.now();
-    const user = await User.findByPk(decoded.id);
-    const duration = Date.now() - start;
-    console.log(`[Middleware] DB query finished in ${duration}ms`);
-
-    if (!user) {
-      console.warn(`[Middleware] User not found in DB: ${decoded.id}`);
-      return res.status(401).json({ message: "Unauthorized: User not found in database" });
-    }
-
+    // Success: Pass to controller
+    console.log(`[Middleware] Auth success for User ID: ${decoded.id}`);
     req.userId = decoded.id;
     return next();
   } catch (error) {
+    console.error(`[Middleware] Auth error: ${error instanceof Error ? error.message : "Unknown error"}`);
     return res.status(401).json({ message: "Unauthorized" });
   }
 };
