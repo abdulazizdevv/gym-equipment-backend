@@ -44,6 +44,7 @@ export type EquipmentImage = {
 }
 
 export type EquipmentAnalysisResult = {
+  isGymEquipment: boolean
   equipment: {
     name: string
     confidence?: number
@@ -148,6 +149,7 @@ const inferExerciseName = (equipmentName: string): string => {
 
 const normalizeGeminiResponse = (parsed: any): EquipmentAnalysisResult => {
   return {
+    isGymEquipment: !!parsed?.isGymEquipment,
     equipment: {
       name:
         typeof parsed?.equipment?.name === "string"
@@ -313,6 +315,7 @@ export const detectEquipment = async (
 
   if (!GEMINI_API_KEYS || GEMINI_API_KEYS.length === 0) {
     return {
+      isGymEquipment: false,
       equipment: { name: "No API keys configured" },
       muscles: [],
       usage: { steps: [], cues: [], commonMistakes: [] },
@@ -329,12 +332,16 @@ You are a gym expert.
 Write ALL user-facing text in this language: ${language}.
 Return ONLY JSON:
 {
+  "isGymEquipment": boolean,
   "equipment": { "name": string, "confidence": number },
   "muscles": string[],
   "usage": { "steps": string[], "cues": string[], "commonMistakes": string[] },
   "tips": string[],
   "images": []
 }
+
+IMPORTANT: Set "isGymEquipment" to true ONLY if the image clearly contains fitness/gym machinery, dumbbells, barbells, or weights. 
+If the image shows people without gear, animals, landscapes, or unrelated objects, set "isGymEquipment" to false.
       `,
     },
   ]

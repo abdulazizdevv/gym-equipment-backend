@@ -522,6 +522,15 @@ export const generateAiImage = async (
     if (!post) return res.status(404).json({ message: "Post not found" })
 
     const resultJson: any = post.resultJson || {}
+
+    // Safety check: Don't generate illustrations if the original image wasn't gym equipment
+    if (resultJson.isGymEquipment === false) {
+      return res.status(400).json({
+        message:
+          "This content is not recognized as gym equipment. Illustration generation is only available for fitness-related machinery.",
+      })
+    }
+
     const equipmentName = resultJson?.equipment?.name || "Unknown equipment"
     const muscles = Array.isArray(resultJson?.muscles) ? resultJson.muscles : []
 
