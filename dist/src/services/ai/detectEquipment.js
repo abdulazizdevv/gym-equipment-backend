@@ -4,6 +4,7 @@ exports.detectEquipment = exports.generateExerciseIllustrationWithOpenAI = void 
 const error_1 = require("../../api/utils/error");
 const r2_service_1 = require("../storage/r2.service");
 const image_service_1 = require("../storage/image.service");
+const gemini_keys_1 = require("../../api/utils/gemini-keys");
 const formatNetworkError = (err) => {
     if (err instanceof Error) {
         const cause = err.cause;
@@ -254,12 +255,11 @@ SAFETY / STYLE RULES:
 };
 exports.generateExerciseIllustrationWithOpenAI = generateExerciseIllustrationWithOpenAI;
 const detectEquipment = async (args) => {
-    const apiKey = process.env.GEMINI_API_KEY;
     const language = resolveLanguage(args.language);
     const i18n = t(language);
-    if (!apiKey) {
+    if (!gemini_keys_1.GEMINI_API_KEYS || gemini_keys_1.GEMINI_API_KEYS.length === 0) {
         return {
-            equipment: { name: "No API key" },
+            equipment: { name: "No API keys configured" },
             muscles: [],
             usage: { steps: [], cues: [], commonMistakes: [] },
             tips: [i18n.noApiKeyTip],
@@ -267,10 +267,6 @@ const detectEquipment = async (args) => {
         };
     }
     const { GoogleGenAI } = await import("@google/genai");
-    const ai = new GoogleGenAI({
-        apiKey,
-        httpOptions: { timeout: geminiHttpTimeoutMs },
-    });
     const parts = [
         {
             text: `
@@ -309,23 +305,33 @@ Return ONLY JSON:
             },
         });
     }
-    // Gemini chaqirish
-    let response;
-    try {
-        response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: [{ role: "user", parts }],
-        });
+    let lastError = null;
+    // Sequential retry logic: always starts from index 0, then 1, 2, 3...
+    for (let i = 0; i < gemini_keys_1.GEMINI_API_KEYS.length; i++) {
+        const apiKey = gemini_keys_1.GEMINI_API_KEYS[i];
+        try {
+            const ai = new GoogleGenAI({
+                apiKey,
+                httpOptions: { timeout: geminiHttpTimeoutMs },
+            });
+            // Use model from env or fallback to a stable default
+            const modelName = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+            const response = await ai.models.generateContent({
+                model: modelName,
+                contents: [{ role: "user", parts }],
+            });
+            const text = response?.text || "";
+            const parsed = safeJsonParse(text);
+            // normalize and return immediately on success
+            return normalizeGeminiResponse(parsed);
+        }
+        catch (err) {
+            console.warn(`Gemini API attempt failed with key index ${i} (${apiKey.substring(0, 6)}...):`, formatNetworkError(err));
+            lastError = err;
+            // Continue to next key in loop
+        }
     }
-    catch (err) {
-        throw new error_1.CustomError(geminiFailureMessage(formatNetworkError(err)), 502);
-    }
-    const text = response?.text || "";
-    const parsed = safeJsonParse(text);
-    // normalize
-    const normalized = normalizeGeminiResponse(parsed);
-    // Image generation is now separated and called via a dedicated endpoint.
-    // We no longer automatically call generateExerciseIllustrationWithOpenAI.
-    return normalized;
+    // If we reach here, all keys failed
+    throw new error_1.CustomError(geminiFailureMessage(formatNetworkError(lastError)), 502);
 };
 exports.detectEquipment = detectEquipment;

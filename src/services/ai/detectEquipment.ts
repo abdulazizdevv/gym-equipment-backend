@@ -1,6 +1,7 @@
 import { CustomError } from "../../api/utils/error"
 import { uploadFile } from "../storage/r2.service"
 import { optimizeImage } from "../storage/image.service"
+import { GEMINI_API_KEYS } from "../../api/utils/gemini-keys"
 
 const formatNetworkError = (err: unknown): string => {
   if (err instanceof Error) {
@@ -278,13 +279,21 @@ SAFETY / STYLE RULES:
     if (b64) {
       const buffer = Buffer.from(b64, "base64")
       const optimized = await optimizeImage(buffer)
-      finalUrl = await uploadFile(optimized.buffer, `${v4()}.webp`, optimized.mimeType)
+      finalUrl = await uploadFile(
+        optimized.buffer,
+        `${v4()}.webp`,
+        optimized.mimeType,
+      )
     } else if (remoteUrl) {
       const imgRes = await fetch(remoteUrl)
       if (!imgRes.ok) return []
       const buffer = new Uint8Array(await imgRes.arrayBuffer())
       const optimized = await optimizeImage(buffer)
-      finalUrl = await uploadFile(optimized.buffer, `${v4()}.webp`, optimized.mimeType)
+      finalUrl = await uploadFile(
+        optimized.buffer,
+        `${v4()}.webp`,
+        optimized.mimeType,
+      )
     } else {
       return []
     }
@@ -299,13 +308,12 @@ SAFETY / STYLE RULES:
 export const detectEquipment = async (
   args: DetectEquipmentArgs,
 ): Promise<EquipmentAnalysisResult> => {
-  const apiKey = process.env.GEMINI_API_KEY
   const language = resolveLanguage(args.language)
   const i18n = t(language)
 
-  if (!apiKey) {
+  if (!GEMINI_API_KEYS || GEMINI_API_KEYS.length === 0) {
     return {
-      equipment: { name: "No API key" },
+      equipment: { name: "No API keys configured" },
       muscles: [],
       usage: { steps: [], cues: [], commonMistakes: [] },
       tips: [i18n.noApiKeyTip],
@@ -314,11 +322,6 @@ export const detectEquipment = async (
   }
 
   const { GoogleGenAI } = await import("@google/genai")
-  const ai = new GoogleGenAI({
-    apiKey,
-    httpOptions: { timeout: geminiHttpTimeoutMs },
-  })
-
   const parts: any[] = [
     {
       text: `
@@ -360,25 +363,43 @@ Return ONLY JSON:
     })
   }
 
-  // Gemini chaqirish
-  let response
-  try {
-    response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [{ role: "user", parts }],
-    })
-  } catch (err) {
-    throw new CustomError(geminiFailureMessage(formatNetworkError(err)), 502)
+  let lastError: any = null
+
+  // Sequential retry logic: always starts from index 0, then 1, 2, 3...
+  for (let i = 0; i < GEMINI_API_KEYS.length; i++) {
+    const apiKey = GEMINI_API_KEYS[i]
+    try {
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: { timeout: geminiHttpTimeoutMs },
+      })
+
+      // Use model from env or fallback to a stable default
+      const modelName = process.env.GEMINI_MODEL || "gemini-1.5-flash"
+
+      const response = await ai.models.generateContent({
+        model: modelName,
+        contents: [{ role: "user", parts }],
+      })
+
+      const text = response?.text || ""
+      const parsed = safeJsonParse(text)
+
+      // normalize and return immediately on success
+      return normalizeGeminiResponse(parsed)
+    } catch (err) {
+      console.warn(
+        `Gemini API attempt failed with key index ${i} (${apiKey.substring(0, 6)}...):`,
+        formatNetworkError(err),
+      )
+      lastError = err
+      // Continue to next key in loop
+    }
   }
 
-  const text = response?.text || ""
-  const parsed = safeJsonParse(text)
-
-  // normalize
-  const normalized = normalizeGeminiResponse(parsed)
-
-  // Image generation is now separated and called via a dedicated endpoint.
-  // We no longer automatically call generateExerciseIllustrationWithOpenAI.
-
-  return normalized
+  // If we reach here, all keys failed
+  throw new CustomError(
+    geminiFailureMessage(formatNetworkError(lastError)),
+    502,
+  )
 }

@@ -1,4 +1,4 @@
-import { Client } from "pg"
+import { Client, ClientConfig } from "pg"
 import { URL } from "url"
 
 /**
@@ -26,9 +26,20 @@ export const initDb = async () => {
     const rootUrl = new URL(databaseUrl)
     rootUrl.pathname = "/postgres"
 
-    const client = new Client({
+    const clientConfig: ClientConfig = {
       connectionString: rootUrl.toString(),
-    })
+    }
+
+    if (
+      databaseUrl.includes("neon.tech") ||
+      databaseUrl.includes("sslmode=require")
+    ) {
+      clientConfig.ssl = {
+        rejectUnauthorized: false,
+      }
+    }
+
+    const client = new Client(clientConfig)
 
     await client.connect()
 

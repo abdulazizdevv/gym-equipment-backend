@@ -22,9 +22,16 @@ const initDb = async () => {
         // Temporarily point to 'postgres' database to check for existence of target db
         const rootUrl = new url_1.URL(databaseUrl);
         rootUrl.pathname = "/postgres";
-        const client = new pg_1.Client({
+        const clientConfig = {
             connectionString: rootUrl.toString(),
-        });
+        };
+        if (databaseUrl.includes("neon.tech") ||
+            databaseUrl.includes("sslmode=require")) {
+            clientConfig.ssl = {
+                rejectUnauthorized: false,
+            };
+        }
+        const client = new pg_1.Client(clientConfig);
         await client.connect();
         const res = await client.query("SELECT 1 FROM pg_database WHERE datname = $1", [dbName]);
         if (res.rowCount === 0) {

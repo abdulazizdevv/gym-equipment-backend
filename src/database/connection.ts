@@ -1,6 +1,20 @@
-import { Sequelize } from "sequelize"
+import { Sequelize, Options } from "sequelize"
 
 const databaseUrl: string =
   process.env.DATABASE_URL ?? "postgresql://abdulaziz@localhost:5432/muskul"
 
-export const sequelize = new Sequelize(databaseUrl)
+const options: Options = {
+  dialect: "postgres",
+}
+
+// Neon and other managed PG hosts require SSL
+if (databaseUrl.includes("neon.tech") || databaseUrl.includes("sslmode=require")) {
+  options.dialectOptions = {
+    ssl: {
+      require: true,
+      rejectUnauthorized: false, // Required for many managed DB providers
+    },
+  }
+}
+
+export const sequelize = new Sequelize(databaseUrl, options)
