@@ -14,7 +14,7 @@ const getMe = async (req, res, next) => {
         const start = Date.now();
         const user = await User_1.default.findOne({ where: { id: userId } });
         const duration = Date.now() - start;
-        console.log(`[Controller] User lookup finished in ${duration}ms`);
+        console.log(`[Controller]  User lookup finished in ${duration}ms`);
         if (!user) {
             console.warn(`[Controller] User not found: ${userId}`);
             return res.status(404).json({ message: "User not found" });

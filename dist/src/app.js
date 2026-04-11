@@ -6,6 +6,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
 const express_1 = __importDefault(require("express"));
 const app = (0, express_1.default)();
+app.get("/ping", (req, res) => {
+    console.log("PING HIT");
+    res.json({ ok: true });
+});
 const modules_1 = require("./start/modules");
 const run_1 = require("./start/run");
 (0, modules_1.modules)(app);
