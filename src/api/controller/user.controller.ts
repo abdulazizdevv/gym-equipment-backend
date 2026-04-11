@@ -14,8 +14,16 @@ export const getMe = async (
     const userId = req.userId;
     if (!userId) return res.status(401).json({ message: "Unauthorized" });
 
+    console.log(`[Controller] Fetching user profile for ID: ${userId}`);
+    const start = Date.now();
     const user = await User.findOne({ where: { id: userId } });
-    if (!user) return res.status(404).json({ message: "User not found" });
+    const duration = Date.now() - start;
+    console.log(`[Controller] User lookup finished in ${duration}ms`);
+
+    if (!user) {
+      console.warn(`[Controller] User not found: ${userId}`);
+      return res.status(404).json({ message: "User not found" });
+    }
 
     return res.status(200).json({
       id: user.dataValues.id,
