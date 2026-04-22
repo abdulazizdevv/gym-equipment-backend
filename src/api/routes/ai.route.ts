@@ -1,28 +1,25 @@
-import { Router } from "express"
-import { requireUser } from "../../middleware/requireUser.middleware"
+import { Router } from 'express'
+import { requireUser } from '../../middleware/requireUser.middleware'
 import {
-  deleteAiSession,
-  getAiSessionById,
-  getAiSessions,
   postAiEquipment,
-  generateAiImage,
-} from "../controller/ai.controller"
+  getAiSessions,
+  getAiSessionById,
+  deleteAiSession,
+  adminUpsertEquipmentGifs,
+} from '../controller/ai.controller'
 
 export const router = Router()
 
-// Single endpoint:
-// - multipart/form-data with `image` => "search"
-// - JSON body with `sessionId` + `question` => "followup"
-router.post("/ai/equipment", requireUser, postAiEquipment)
+// ─── AI Equipment Analysis ────────────────────────────────────────────────────
+// - multipart/form-data with `image`            → search mode
+// - JSON body with `sessionId` + `question`     → follow-up mode
+router.post('/ai/equipment', requireUser, postAiEquipment)
 
-// History CRUD
-router.get("/ai/sessions", requireUser, getAiSessions)
-router.get("/ai/sessions/:id", requireUser, getAiSessionById)
-router.delete("/ai/sessions/:id", requireUser, deleteAiSession)
+// ─── Session History CRUD ─────────────────────────────────────────────────────
+router.get('/ai/sessions',     requireUser, getAiSessions)
+router.get('/ai/sessions/:id', requireUser, getAiSessionById)
+router.delete('/ai/sessions/:id', requireUser, deleteAiSession)
 
-// Generate image for a specific post (Paid/Manual Trigger)
-router.post(
-  "/ai/sessions/:sessionId/posts/:postId/generate-image",
-  requireUser,
-  generateAiImage,
-)
+// ─── Admin: Manual GIF Seed ───────────────────────────────────────────────────
+// Body: { equipmentName: string, gifUrls: string[], captions?: string[] }
+router.post('/admin/equipment-gifs', adminUpsertEquipmentGifs)

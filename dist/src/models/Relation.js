@@ -7,11 +7,12 @@ exports.relations = void 0;
 const User_1 = __importDefault(require("./User"));
 const AiSession_1 = __importDefault(require("./AiSession"));
 const AiPost_1 = __importDefault(require("./AiPost"));
+require("./EquipmentGif"); // register model so Sequelize syncs the table
 const relations = () => {
-    // User -> AI sessions
-    User_1.default.hasMany(AiSession_1.default, { foreignKey: "userId" });
-    AiSession_1.default.belongsTo(User_1.default, { foreignKey: "userId" });
-    // Session -> AI turns
+    // User → AI sessions
+    User_1.default.hasMany(AiSession_1.default, { foreignKey: 'userId' });
+    AiSession_1.default.belongsTo(User_1.default, { foreignKey: 'userId' });
+    // Session → AI turns
     AiSession_1.default.hasMany(AiPost_1.default, { foreignKey: 'sessionId', as: 'posts' });
     AiPost_1.default.belongsTo(AiSession_1.default, { foreignKey: 'sessionId', as: 'session' });
 };
