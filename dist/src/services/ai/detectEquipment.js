@@ -4,6 +4,7 @@ exports.detectEquipment = void 0;
 const error_1 = require("../../api/utils/error");
 const gemini_keys_1 = require("../../api/utils/gemini-keys");
 const exercisedb_service_1 = require("./exercisedb.service");
+const groq_service_1 = require("./groq.service");
 // ─── Network Error Helpers ────────────────────────────────────────────────────
 const formatNetworkError = (err) => {
     if (err instanceof Error) {
@@ -160,6 +161,7 @@ objects, set "isGymEquipment" to false.
     }
     // Sequential key rotation
     const errors = [];
+    const delay = (ms) => new Promise(res => setTimeout(res, ms));
     for (let i = 0; i < gemini_keys_1.GEMINI_API_KEYS.length; i++) {
         const apiKey = gemini_keys_1.GEMINI_API_KEYS[i];
         try {
@@ -172,7 +174,8 @@ objects, set "isGymEquipment" to false.
                 model: modelName,
                 contents: [{ role: 'user', parts }],
             });
-            const parsed = safeJsonParse(response?.text ?? '');
+            const text = response?.text || '';
+            const parsed = safeJsonParse(text);
             const analysis = normalizeGeminiResponse(parsed);
             // Fetch GIFs only when recognized as gym equipment
             let images = [];
@@ -185,6 +188,45 @@ objects, set "isGymEquipment" to false.
             const detail = formatNetworkError(err);
             console.warn(`[Gemini] Key[${i}] failed:`, detail);
             errors.push({ index: i, key: apiKey, detail });
+            // If it's a 530/503 (Overloaded) error, wait a bit before next key
+            if (detail.includes('503') || detail.includes('overloaded')) {
+                await delay(1500);
+            }
+        }
+    }
+    // ─── 4. Fallback: Groq (Llama 3.2 Vision) ───────────────────────────────────
+    if (process.env.GROQ_API_KEY) {
+        try {
+            console.log('[AI Fallback] Trying Groq...');
+            let base64Image = '';
+            if (args.image?.buffer) {
+                base64Image = Buffer.isBuffer(args.image.buffer)
+                    ? args.image.buffer.toString('base64')
+                    : Buffer.from(args.image.buffer).toString('base64');
+            }
+            else if (args.image?.filePath) {
+                const fs = await import('fs/promises');
+                const buf = await fs.readFile(args.image.filePath);
+                base64Image = buf.toString('base64');
+            }
+            if (base64Image) {
+                const groqText = await (0, groq_service_1.analyzeImageWithGroq)({
+                    imageAsBase64: base64Image,
+                    mimeType: args.image?.mimeType ?? 'image/jpeg',
+                    prompt: parts[0].text, // Reuse the same prompt
+                });
+                const parsed = safeJsonParse(groqText);
+                const analysis = normalizeGeminiResponse(parsed);
+                let images = [];
+                if (analysis.isGymEquipment && analysis.equipment.name !== 'Unknown equipment') {
+                    images = await (0, exercisedb_service_1.getOrFetchEquipmentGifs)(analysis.equipment.name, analysis.muscles);
+                }
+                console.log('[AI Fallback] Groq success');
+                return { ...analysis, images };
+            }
+        }
+        catch (groqErr) {
+            console.error('[AI Fallback] Groq failed:', groqErr);
         }
     }
     // All keys exhausted

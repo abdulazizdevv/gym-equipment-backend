@@ -85,17 +85,25 @@ const postAiEquipment = async (req, res, next) => {
             const optimized = await (0, image_service_1.optimizeImage)(uploaded.file.data);
             const webpName = `${(0, uuid_1.v4)()}.webp`;
             const r2Url = await (0, r2_service_1.uploadFile)(optimized.buffer, webpName, optimized.mimeType);
-            const result = await (0, detectEquipment_1.detectEquipment)({
-                image: {
-                    filePath: '',
-                    buffer: optimized.buffer,
-                    url: r2Url,
-                    mimeType: optimized.mimeType,
-                },
-                question: typeof question === 'string' ? question : undefined,
-                history: [],
-                language,
-            });
+            let result;
+            try {
+                result = await (0, detectEquipment_1.detectEquipment)({
+                    image: {
+                        filePath: '',
+                        buffer: optimized.buffer,
+                        url: r2Url,
+                        mimeType: optimized.mimeType,
+                    },
+                    question: typeof question === 'string' ? question : undefined,
+                    history: [],
+                    language,
+                });
+            }
+            catch (error) {
+                // 🗑️ Delete from R2 if AI fails
+                await (0, r2_service_1.deleteFile)(webpName);
+                throw error;
+            }
             const { session, post } = await connection_1.sequelize.transaction(async (transaction) => {
                 const session = await AiSession_1.default.create({ userId }, { transaction });
                 const post = await AiPost_1.default.create({

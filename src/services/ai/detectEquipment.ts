@@ -1,6 +1,7 @@
 import { CustomError } from '../../api/utils/error'
 import { GEMINI_API_KEYS } from '../../api/utils/gemini-keys'
 import { getOrFetchEquipmentGifs } from './exercisedb.service'
+import { analyzeImageWithGroq } from './groq.service'
 
 // ─── Network Error Helpers ────────────────────────────────────────────────────
 
@@ -205,6 +206,7 @@ objects, set "isGymEquipment" to false.
 
   // Sequential key rotation
   const errors: Array<{ index: number; key: string; detail: string }> = []
+  const delay = (ms: number) => new Promise(res => setTimeout(res, ms))
 
   for (let i = 0; i < GEMINI_API_KEYS.length; i++) {
     const apiKey = GEMINI_API_KEYS[i]
@@ -221,7 +223,8 @@ objects, set "isGymEquipment" to false.
         contents: [{ role: 'user', parts }],
       })
 
-      const parsed   = safeJsonParse(response?.text ?? '')
+      const text = response?.text || ''
+      const parsed = safeJsonParse(text)
       const analysis = normalizeGeminiResponse(parsed)
 
       // Fetch GIFs only when recognized as gym equipment
@@ -235,6 +238,50 @@ objects, set "isGymEquipment" to false.
       const detail = formatNetworkError(err)
       console.warn(`[Gemini] Key[${i}] failed:`, detail)
       errors.push({ index: i, key: apiKey, detail })
+
+      // If it's a 530/503 (Overloaded) error, wait a bit before next key
+      if (detail.includes('503') || detail.includes('overloaded')) {
+        await delay(1500) 
+      }
+    }
+  }
+
+  // ─── 4. Fallback: Groq (Llama 3.2 Vision) ───────────────────────────────────
+  if (process.env.GROQ_API_KEY) {
+    try {
+      console.log('[AI Fallback] Trying Groq...')
+      
+      let base64Image = ''
+      if (args.image?.buffer) {
+        base64Image = Buffer.isBuffer(args.image.buffer)
+          ? args.image.buffer.toString('base64')
+          : Buffer.from(args.image.buffer).toString('base64')
+      } else if (args.image?.filePath) {
+        const fs  = await import('fs/promises')
+        const buf = await fs.readFile(args.image.filePath)
+        base64Image = buf.toString('base64')
+      }
+
+      if (base64Image) {
+        const groqText = await analyzeImageWithGroq({
+          imageAsBase64: base64Image,
+          mimeType: args.image?.mimeType ?? 'image/jpeg',
+          prompt: parts[0].text, // Reuse the same prompt
+        })
+
+        const parsed   = safeJsonParse(groqText)
+        const analysis = normalizeGeminiResponse(parsed)
+
+        let images: EquipmentAnalysisResult['images'] = []
+        if (analysis.isGymEquipment && analysis.equipment.name !== 'Unknown equipment') {
+          images = await getOrFetchEquipmentGifs(analysis.equipment.name, analysis.muscles)
+        }
+
+        console.log('[AI Fallback] Groq success')
+        return { ...analysis, images }
+      }
+    } catch (groqErr) {
+      console.error('[AI Fallback] Groq failed:', groqErr)
     }
   }
 
