@@ -136,17 +136,24 @@ export const postAiEquipment = async (
       const webpName  = `${v4()}.webp`
       const r2Url     = await uploadFile(optimized.buffer, webpName, optimized.mimeType)
 
-      const result = await detectEquipment({
-        image: {
-          filePath: '',
-          buffer: optimized.buffer,
-          url: r2Url,
-          mimeType: optimized.mimeType,
-        },
-        question: typeof question === 'string' ? question : undefined,
-        history: [],
-        language,
-      })
+      let result: any
+      try {
+        result = await detectEquipment({
+          image: {
+            filePath: '',
+            buffer: optimized.buffer,
+            url: r2Url,
+            mimeType: optimized.mimeType,
+          },
+          question: typeof question === 'string' ? question : undefined,
+          history: [],
+          language,
+        })
+      } catch (error) {
+        // 🗑️ Delete from R2 if AI fails
+        await deleteFile(webpName)
+        throw error
+      }
 
       const { session, post } = await sequelize.transaction(async (transaction) => {
         const session = await AiSession.create({ userId }, { transaction })
